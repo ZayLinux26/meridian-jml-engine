@@ -1,0 +1,16 @@
+EmployeeId,GivenName,Surname,Department,JobTitle,ManagerId,Office,EmploymentType,Status,EffectiveDate
+100001,Marcus,Bell,Finance,VP Finance,,Chicago,Employee,Active,2026-09-01
+100002,Priya,Raman,Finance,Senior Financial Analyst,100001,Chicago,Employee,Active,2026-09-01
+100004,James,Okafor,Technology,Director of IT,,Chicago,Employee,Active,2026-09-01
+100005,Hannah,Lee,Technology,Systems Engineer,100004,Chicago,Employee,Active,2026-09-01
+100006,Diego,Álvarez,Technology,IAM Engineer,100004,Chicago,Employee,Active,2026-09-01
+100007,Sarah,Kim,Operations,Operations Manager,,New York,Employee,Active,2026-09-01
+100009,Aisha,Grant,HR,HR Business Partner,,Chicago,Employee,Active,2026-09-01
+100010,Kevin,Walsh,Compliance,Chief Compliance Officer,,New York,Employee,Active,2026-09-01
+100011,Rachel,Stein,Compliance,AML Analyst,100010,New York,Employee,Active,2026-09-01
+C2001,Nora,Patel,Technology,Contract Developer,100004,Chicago,Contractor,Active,2026-09-01
+100003,Elena,Sokolova,Compliance,Risk Analyst,100010,Chicago,Employee,Active,2026-09-21
+100008,Tom,Brennan,Operations,Senior Operations Analyst,100007,New York,Employee,Active,2026-09-21
+C2002,Luis,Romero,Operations,Contract Analyst,100007,New York,Contractor,Active,2026-09-01
+100012,Michael,Chen,Technology,Security Analyst,100004,Chicago,Employee,Active,2026-09-21
+100013,Grace,Liu,Finance,Staff Accountant,100001,Chicago,Employee,Active,2027-01-04

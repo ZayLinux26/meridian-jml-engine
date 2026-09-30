@@ -1,0 +1,8 @@
+EmployeeId,GivenName,Surname,Department,JobTitle,ManagerId,Office,EmploymentType,Status,EffectiveDate
+100001,Marcus,Bell,Finance,VP Finance,,Chicago,Employee,Active,2026-09-01
+100002,Priya,Raman,Finance,Senior Financial Analyst,100001,Chicago,Employee,Active,2026-09-01
+100004,James,Okafor,Technology,Director of IT,,Chicago,Employee,Active,2026-09-01
+100014,Ana,Ruiz,Marketing,Brand Manager,,Chicago,Employee,Active,2026-09-21
+100015,Sam,Ortiz,Finance,Analyst,,Chicago,Employee,Active,09/21/2026
+100016,Lee,Park,Finance,Analyst,,Chicago,Intern,Active,2026-09-21
+100002,Priya,Raman,Finance,Duplicate Row,100001,Chicago,Employee,Active,2026-09-01

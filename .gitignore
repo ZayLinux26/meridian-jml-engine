@@ -1,0 +1,7 @@
+# Real config holds tenant/app ids and a cert thumbprint
+config/jml.config.psd1
+# Run output (journals, logs, reports) contains names and employee IDs
+output/
+*.pfx
+*.cer
+.DS_Store

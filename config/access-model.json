@@ -1,0 +1,23 @@
+{
+  "_comment": "Birthright access model. Layers stack: Global + EmploymentType + Department + JobTitle. Any group named here is engine-managed; groups not named here are never removed from active workers.",
+  "Global": {
+    "AD": [],
+    "Entra": ["SG-MFG-AllStaff"]
+  },
+  "EmploymentType": {
+    "Employee":   { "AD": ["GG-MFG-Employees"], "Entra": ["SG-MFG-Lic-M365"] },
+    "Contractor": { "AD": [],                   "Entra": ["SG-MFG-Contractors"] }
+  },
+  "Department": {
+    "Finance":    { "AD": ["GG-MFG-Finance"],    "Entra": ["SG-MFG-App-ERP"] },
+    "Technology": { "AD": ["GG-MFG-Technology"], "Entra": ["SG-MFG-App-AzureDevOps"] },
+    "Operations": { "AD": ["GG-MFG-Operations"], "Entra": ["SG-MFG-App-ServiceNow"] },
+    "HR":         { "AD": ["GG-MFG-HR"],         "Entra": ["SG-MFG-App-Workday"] },
+    "Compliance": { "AD": ["GG-MFG-Compliance"], "Entra": ["SG-MFG-App-GRC"] }
+  },
+  "JobTitle": {
+    "Treasury Analyst": { "AD": ["GG-MFG-Treasury-WireRelease"], "Entra": [] },
+    "IAM Engineer":     { "AD": ["GG-MFG-IAM-Operators"],        "Entra": [] },
+    "AML Analyst":      { "AD": ["GG-MFG-AML-CaseMgmt"],         "Entra": [] }
+  }
+}
