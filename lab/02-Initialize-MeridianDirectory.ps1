@@ -50,10 +50,15 @@ function New-GroupIfMissing {
     else { Write-Host "  = GRP $Name" -ForegroundColor DarkGray }
 }
 
-Write-Host "`nDNS forwarder (Azure recursive resolver, so the Cloud Sync agent can reach Microsoft endpoints)" -ForegroundColor Cyan
-$fwd = (Get-DnsServerForwarder).IPAddress.IPAddressToString
-if ($fwd -notcontains '168.63.129.16') { Add-DnsServerForwarder -IPAddress 168.63.129.16; Write-Host '  + 168.63.129.16' -ForegroundColor Green }
-else { Write-Host '  = 168.63.129.16' -ForegroundColor DarkGray }
+Write-Host "`nDNS forwarder on the domain controller (Azure recursive resolver)" -ForegroundColor Cyan
+# Runs from the management server, so target the DC explicitly.
+$dc = (Get-ADDomainController -Discover -Service PrimaryDC).HostName | Select-Object -First 1
+if (Get-Command Get-DnsServerForwarder -ErrorAction SilentlyContinue) {
+    $fwd = @((Get-DnsServerForwarder -ComputerName $dc).IPAddress | ForEach-Object { $_.IPAddressToString })
+    if ($fwd -notcontains '168.63.129.16') { Add-DnsServerForwarder -ComputerName $dc -IPAddress 168.63.129.16; Write-Host "  + 168.63.129.16 on $dc" -ForegroundColor Green }
+    else { Write-Host "  = 168.63.129.16 on $dc" -ForegroundColor DarkGray }
+}
+else { Write-Host '  skipped (DNS tools not installed; run Install-WindowsFeature RSAT-DNS-Server to manage it from here)' -ForegroundColor DarkYellow }
 
 Write-Host "`nUPN suffix" -ForegroundColor Cyan
 $forest = Get-ADForest
