@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Installs PowerShell 7, Git and the Graph authentication module on MFG-DC01.
+    Installs the latest PowerShell 7, Git and the Graph authentication module on MFG-DC01.
 .DESCRIPTION
     Run in the built-in Windows PowerShell 5.1 (as Administrator) right after
     the VM is created. Everything after this runs in PowerShell 7 (pwsh).
@@ -11,10 +11,10 @@ $ErrorActionPreference = 'Stop'
 $tmp = Join-Path $env:TEMP 'mfg-tooling'
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
-Write-Host 'Installing PowerShell 7.4 LTS...' -ForegroundColor Cyan
-$pwshMsi = Join-Path $tmp 'pwsh.msi'
-Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.msi' -OutFile $pwshMsi
-Start-Process msiexec.exe -Wait -ArgumentList "/i `"$pwshMsi`" /qn ADD_PATH=1 ENABLE_PSREMOTING=0 REGISTER_MANIFEST=1"
+Write-Host 'Installing the latest stable PowerShell 7...' -ForegroundColor Cyan
+# The current Microsoft.Graph modules need the newest PowerShell runtime, so
+# use Microsoft's installer script rather than pinning an older MSI.
+Invoke-Expression "& { $(Invoke-RestMethod https://aka.ms/install-powershell.ps1) } -UseMSI -Quiet"
 
 Write-Host 'Installing Git for Windows...' -ForegroundColor Cyan
 $gitExe = Join-Path $tmp 'git.exe'

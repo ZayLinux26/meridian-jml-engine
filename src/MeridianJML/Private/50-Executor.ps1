@@ -57,7 +57,17 @@ function Invoke-JmlPlanItem {
         }
         $a.StartedAt = (Get-Date).ToUniversalTime().ToString('o')
         try {
-            [void](Invoke-JmlDirectoryAction -System $a.System -Type $a.Type -Params $a.Params -EmployeeId $Item.EmployeeId)
+            $out = Invoke-JmlDirectoryAction -System $a.System -Type $a.Type -Params $a.Params -EmployeeId $Item.EmployeeId
+            if ($a.Key -eq 'Entra.CreateUser' -and $out -is [string] -and $out) {
+                # Later steps referenced the user by UPN. Swap in the new object id
+                # so they do not depend on the UPN index having replicated yet.
+                foreach ($later in $Item.Actions) {
+                    foreach ($bag in @($later.Params, $(if ($later.Undo) { $later.Undo.Params }))) {
+                        if ($bag -and $bag.ContainsKey('UserRef') -and $bag.UserRef -ieq $a.Params.Upn) { $bag.UserRef = $out }
+                    }
+                }
+                $a.Params.CreatedId = $out
+            }
             $a.Status = 'Succeeded'
             $a.CompletedAt = (Get-Date).ToUniversalTime().ToString('o')
             $done.Add($a)

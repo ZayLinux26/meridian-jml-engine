@@ -25,6 +25,7 @@ function Invoke-JmlGraph {
         $Body,
         [hashtable]$Headers = @{},
         [switch]$AllowNotFound,
+        [switch]$RetryNotFound,
         [int]$MaxAttempts = 4
     )
     $full = if ($Uri -like 'https://*') { $Uri } else { "https://graph.microsoft.com/v1.0/$Uri" }
@@ -34,6 +35,14 @@ function Invoke-JmlGraph {
         try { return Invoke-MgGraphRequest @req }
         catch {
             $status = Get-JmlHttpStatus $_
+            # Objects created seconds ago may not have replicated yet. Callers that
+            # act on a just-created object pass -RetryNotFound to wait it out.
+            if ($status -eq 404 -and $RetryNotFound -and $attempt -lt 6) {
+                $MaxAttempts = [Math]::Max($MaxAttempts, 6)
+                Write-JmlLog -Level DEBUG -Message "Graph 404 on $Method $Uri (replication lag?), retry $attempt in $([Math]::Pow(2, $attempt))s"
+                Start-Sleep -Seconds ([Math]::Pow(2, $attempt))
+                continue
+            }
             if ($status -eq 404 -and $AllowNotFound) { return $null }
             if ($status -in @(429, 500, 502, 503, 504) -and $attempt -lt $MaxAttempts) {
                 $delay = [Math]::Pow(2, $attempt)
@@ -160,7 +169,7 @@ function Resolve-JmlEntraUserId {
         foreach ($u in $script:Jml.SimState.Entra.Users.Values) { if ($u.UserPrincipalName -ieq $UserRef) { return $u.Id } }
         throw "Entra user '$UserRef' not found."
     }
-    $u = Invoke-JmlGraph -Uri "users/$([uri]::EscapeDataString($UserRef))?`$select=id"
+    $u = Invoke-JmlGraph -Uri "users/$([uri]::EscapeDataString($UserRef))?`$select=id" -RetryNotFound
     return $u.id
 }
 
@@ -215,7 +224,7 @@ function Invoke-JmlEntraOperation {
         'RevokeSessions' { [void](Invoke-JmlGraph -Method POST -Uri "users/$(Resolve-JmlEntraUserId $Params.UserRef)/revokeSignInSessions") }
         'SetManager' {
             $uid = Resolve-JmlEntraUserId $Params.UserRef
-            [void](Invoke-JmlGraph -Method PUT -Uri "users/$uid/manager/`$ref" -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/users/$($Params.ManagerId)" })
+            [void](Invoke-JmlGraph -Method PUT -Uri "users/$uid/manager/`$ref" -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/users/$($Params.ManagerId)" } -RetryNotFound)
         }
         'ClearManager' {
             $uid = Resolve-JmlEntraUserId $Params.UserRef
@@ -224,7 +233,7 @@ function Invoke-JmlEntraOperation {
         'AddGroupMember' {
             $uid = Resolve-JmlEntraUserId $Params.UserRef
             try {
-                [void](Invoke-JmlGraph -Method POST -Uri "groups/$($Params.GroupId)/members/`$ref" -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$uid" })
+                [void](Invoke-JmlGraph -Method POST -Uri "groups/$($Params.GroupId)/members/`$ref" -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$uid" } -RetryNotFound)
             }
             catch { if ($_.Exception.Message -notmatch 'already exist') { throw } }
         }

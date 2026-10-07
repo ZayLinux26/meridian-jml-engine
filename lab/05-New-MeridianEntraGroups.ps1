@@ -3,7 +3,7 @@
 .SYNOPSIS
     Creates the cloud-only Entra security groups named in the access model.
 .DESCRIPTION
-    Idempotent. Uses a delegated admin sign-in (device code) because the JML
+    Idempotent. Uses a delegated admin sign-in (browser) because the JML
     app is deliberately not allowed to create groups.
 #>
 [CmdletBinding()]
@@ -13,7 +13,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.Graph.Authentication
-Connect-MgGraph -TenantId $TenantId -Scopes 'Group.ReadWrite.All' -UseDeviceCode -NoWelcome
+Connect-MgGraph -TenantId $TenantId -Scopes 'Group.ReadWrite.All' -NoWelcome
 
 $am = Get-Content -LiteralPath $AccessModelPath -Raw | ConvertFrom-Json -AsHashtable
 $layers = @($am.Global) + @($am.EmploymentType.Values) + @($am.Department.Values) + @($am.JobTitle.Values)

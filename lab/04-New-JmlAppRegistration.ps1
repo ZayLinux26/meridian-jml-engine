@@ -14,9 +14,9 @@
     private key is created non-exportable in the current user's certificate
     store on this server, so the credential cannot be copied off the box.
 
-    Sign-in uses device code: open the URL it prints on your Mac, enter the
-    code, and sign in as a Global Administrator (or Privileged Role
-    Administrator + Application Administrator).
+    Sign-in opens a browser or Windows account picker on this server (it can
+    hide behind other windows). Sign in as a Global Administrator, or
+    Privileged Role Administrator + Application Administrator.
 #>
 [CmdletBinding()]
 param(
@@ -30,7 +30,7 @@ if (-not (Get-Module -ListAvailable Microsoft.Graph.Authentication)) {
 }
 Import-Module Microsoft.Graph.Authentication
 
-Connect-MgGraph -TenantId $TenantId -Scopes 'Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All' -UseDeviceCode -NoWelcome
+Connect-MgGraph -TenantId $TenantId -Scopes 'Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All' -NoWelcome
 $graphAppId = '00000003-0000-0000-c000-000000000000'
 $wanted = @('User.ReadWrite.All', 'GroupMember.ReadWrite.All')
 

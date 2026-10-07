@@ -34,8 +34,9 @@ Describe 'Live provider contract (AD + Graph doubles)' {
         }
         $global:FakeDir = @{
             GraphConnected = $false
+            SimulateLag    = $true
             AD             = @{ Users = @{}; Groups = $adGroups }
-            Graph          = @{ Users = @{}; Groups = $entraGroups; Calls = [System.Collections.Generic.List[string]]::new() }
+            Graph          = @{ Users = @{}; Groups = $entraGroups; Calls = [System.Collections.Generic.List[string]]::new(); Lag = @{}; LagHits = 0 }
         }
 
         function Invoke-LiveRun {
@@ -60,6 +61,13 @@ Describe 'Live provider contract (AD + Graph doubles)' {
         @($global:FakeDir.Graph.Users.Values).Count | Should -Be 2
         $global:FakeDir.AD.Users['esokolova'].Manager | Should -Match '^CN=Marcus Bell,'
         $global:FakeDir.AD.Groups['GG-MFG-Treasury-WireRelease'].Contains('esokolova') | Should -BeTrue
+    }
+
+    It 'rides out Entra replication lag on just-created cloud users instead of rolling back' {
+        $global:FakeDir.Graph.LagHits | Should -BeGreaterThan 0
+        $nora = $global:FakeDir.Graph.Users.Values | Where-Object employeeId -eq 'C2001'
+        $nora | Should -Not -BeNullOrEmpty
+        @($global:FakeDir.Graph.Groups.Values | Where-Object { $_.members.Contains($nora.id) }).Count | Should -Be 3
     }
 
     It 'queries employeeId with ConsistencyLevel eventual and converges after Cloud Sync' {

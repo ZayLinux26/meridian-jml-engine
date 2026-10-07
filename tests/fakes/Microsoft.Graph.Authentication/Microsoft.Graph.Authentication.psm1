@@ -73,6 +73,8 @@ function Invoke-MgGraphRequest {
             $u = @{ id = $id; onPremisesSyncEnabled = $null; signInSessionsValidFromDateTime = (Get-Date).ToUniversalTime().ToString('o'); managerId = $null }
             foreach ($k in $data.Keys) { if ($k -ne 'passwordProfile') { $u[$k] = $data[$k] } }
             $g.Users[$id] = $u
+            # Like real Entra, a brand-new object is briefly invisible to writes.
+            if ($global:FakeDir.SimulateLag) { $g.Lag[$id] = 1 }
             return (ConvertTo-FakeUserView $u)
         }
         '^PATCH users/([^/]+)$' {
@@ -97,6 +99,7 @@ function Invoke-MgGraphRequest {
         '^POST groups/([^/]+)/members/\$ref$' {
             $grp = $g.Groups[$Matches[1]]; if (-not $grp) { throw [FakeGraphHttpException]::new('group not found', 404) }
             $uid = ($data.'@odata.id' -split '/')[-1]
+            if ($g.Lag[$uid] -gt 0) { $g.Lag[$uid]--; $g.LagHits++; throw [FakeGraphHttpException]::new("Resource '$uid' does not exist or one of its queried reference-property objects are not present.", 404) }
             if ($grp.members.Contains($uid)) { throw [FakeGraphHttpException]::new('One or more added object references already exist for the following modified properties: members.', 400) }
             [void]$grp.members.Add($uid); return $null
         }
