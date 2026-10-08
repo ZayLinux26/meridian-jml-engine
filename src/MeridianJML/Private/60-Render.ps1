@@ -60,3 +60,31 @@ function Get-JmlCounts {
     foreach ($g in ($Items | Group-Object -Property $Property | Sort-Object Name)) { $h[$g.Name] = $g.Count }
     return $h
 }
+
+function Format-JmlUndoDescription {
+    <#
+        Describes what a rollback step will actually do, in its own direction,
+        so a reviewer reads "Move back to OU=Operations" instead of having to
+        mentally reverse "Move to OU=Disabled Users".
+    #>
+    param($Undo)
+    $p = $Undo.Params
+    switch ("$($Undo.System).$($Undo.Type)") {
+        'AD.SetAttributes' { return "Restore $(Format-JmlChanges $p.Changes)" }
+        'AD.MoveUser' { return "Move back to $($p.TargetOU)" }
+        'AD.EnableUser' { return 'Re-enable AD account' }
+        'AD.DisableUser' { return 'Disable AD account again' }
+        'AD.AddGroupMember' { return "Add back to $($p.Group)" }
+        'AD.RemoveGroupMember' { return "Remove from $($p.Group)" }
+        'AD.RemoveUser' { return "Delete the AD account $($p.Sam) created by this run" }
+        'Entra.SetAttributes' { return "Restore $(Format-JmlChanges $p.Changes)" }
+        'Entra.EnableUser' { return 'Re-enable Entra sign-in' }
+        'Entra.DisableUser' { return 'Block Entra sign-in again' }
+        'Entra.AddGroupMember' { return "Add back to $($p.GroupName)" }
+        'Entra.RemoveGroupMember' { return "Remove from $($p.GroupName)" }
+        'Entra.SetManager' { return 'Restore previous manager' }
+        'Entra.ClearManager' { return 'Clear the manager set by this run' }
+        'Entra.DeleteUser' { return "Delete the cloud account $($p.UserRef) created by this run" }
+        default { return "$($Undo.System).$($Undo.Type)" }
+    }
+}

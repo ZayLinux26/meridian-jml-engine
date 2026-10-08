@@ -195,6 +195,11 @@ Describe 'Meridian JML engine' {
             $u = (Get-SimState).AD.Users['tbrennan']
             $u.DistinguishedName | Should -Match 'OU=Operations,OU=Users'
             $u.Attributes.description | Should -BeNullOrEmpty
+            $rb = Get-ChildItem $journalDir -Filter '*.json' | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json -AsHashtable } |
+                Where-Object { $_.Mode -eq 'Rollback' -and $_.RollbackOf -eq $leaverRun.RunId } | Select-Object -First 1
+            $steps = @($rb.Items[0].Steps)
+            ($steps | Where-Object Of -eq 'AD.MoveUser').Reverse | Should -Match '^Move back to OU=Operations,OU=Users'
+            ($steps | Where-Object Of -eq 'AD.SetAttributes').Reverse | Should -Match "^Restore description 'Terminated"
             $err = $null
             try { Undo-JmlRun -ConfigPath $script:cfgPath -RunId $leaverRun.RunId -Simulated -Confirm:$false 6>$null } catch { $err = $_.Exception.Message }
             $err | Should -Match 'already been undone'

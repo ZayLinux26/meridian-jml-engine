@@ -12,13 +12,16 @@ This guide builds the Meridian hybrid lab and runs the JML engine through three 
 **What you end up with**
 
 ```
-Your Mac ──RDP──> MFG-DC01 (Azure VM, Windows Server 2022)
-                    ├─ AD DS: meridianfg.internal, OU=Meridian
-                    ├─ Entra Cloud Sync agent ──> your Entra tenant
-                    └─ PowerShell 7 + JML engine ──Graph (app-only, cert)──> your Entra tenant
+                          Azure VNet 10.20.0.0/24
+Your Mac ──RDP──┬──> MFG-DC01    10.20.0.4  Windows Server 2022 Core
+                │                  └─ AD DS + DNS: meridianfg.internal, OU=Meridian
+                └──> MFG-MGMT01  10.20.0.5  Windows Server 2022 (Desktop)
+                                   ├─ RSAT (ADUC, DNS), Git, PowerShell 7
+                                   ├─ Entra Cloud Sync agent ──> your Entra tenant
+                                   └─ JML engine ──Graph (app-only, cert)──> your Entra tenant
 ```
 
-One VM plays two roles: domain controller and automation host. In production those are separate machines (the engine would run on a hardened management server under a gMSA). For a lab, one box keeps cost and setup down.
+This is how a real enterprise splits the roles. The domain controller runs Server Core with nothing extra installed, and nobody signs in to it for day-to-day work. Admin tools, the sync agent and the automation all live on a separate management server. (In production the engine would also run under a gMSA instead of an admin account.)
 
 **Screenshot tips for the Mac**
 
@@ -74,13 +77,13 @@ Open the repo's **Actions** tab on GitHub. The `tests` workflow runs on every pu
 
 ---
 
-## Phase 1: Deploy MFG-DC01 in Azure
+## Phase 1: Deploy the two servers in Azure
 
-You can do this in the portal (better screenshots) or with `lab/00-Deploy-LabVM.sh` from the Mac (`brew install azure-cli`, `az login`, then run it). Portal steps:
+You can do this in the portal (better screenshots) or with `lab/00-Deploy-LabVM.sh` from the Mac (`brew install azure-cli`, `az login`, then run it). It deploys both VMs, the VNet, the NSG rule and auto-shutdown. Portal steps:
 
 **1.1** portal.azure.com, **Create a resource**, **Virtual machine**.
 
-**1.2 Basics tab**
+**1.2 Basics tab for MFG-DC01**
 
 | Field | Value |
 |---|---|
@@ -89,74 +92,85 @@ You can do this in the portal (better screenshots) or with `lab/00-Deploy-LabVM.
 | Region | `(US) Central US` (or your closest) |
 | Availability options | No infrastructure redundancy required |
 | Security type | Trusted launch virtual machines |
-| Image | Windows Server 2022 Datacenter: Azure Edition - x64 Gen2 |
-| Size | `Standard_B2ms` (2 vCPU, 8 GiB) |
+| Image | **Windows Server 2022 Datacenter: Azure Edition Core** - x64 Gen2 |
+| Size | `Standard_B2ms` (2 vCPU, 8 GiB). Use a Bsv2 size if your subscription has quota for it; new subscriptions often don't. |
 | Username | `mfgadmin` |
 | Password | a long unique password; save it in your password manager |
 | Public inbound ports | Allow selected ports, RDP (3389) |
 
+Check the cost estimate before you click Create. If it shows hundreds of dollars a month, you picked a marketplace image with a software charge; go back and pick the Microsoft image.
+
 **1.3 Disks tab:** OS disk type `Standard SSD`.
 
-**1.4 Networking tab:** create a new virtual network `vnet-meridian` with address space `10.20.0.0/16` and subnet `snet-identity` `10.20.1.0/24`. Keep the new public IP.
+**1.4 Networking tab:** create a new virtual network `vnet-meridian` (`10.20.0.0/16`) with subnet `snet-identity` (`10.20.0.0/24`). Keep the new public IP.
 
 **1.5 Management tab:** turn on **Auto-shutdown**, 11:00 PM, your time zone. This is the difference between a lab that costs a few dollars and one that runs all month.
 
-**1.6 Review + create**, then **Create**. Wait for the deployment to finish and open the VM.
+**1.6 Review + create**, then **Create**.
 
-**Screenshot `01-azure-vm-overview.png`:** the VM Overview blade (status Running, size, OS). Crop out the subscription ID and public IP.
+**1.7 Make the DC's private IP static.** VM, **Networking**, the network interface, **IP configurations**, `ipconfig1`, assignment **Static**, address `10.20.0.4`, save. A domain controller's address must never change.
 
-**1.7 Lock RDP to your IP.** VM, **Networking**, **Network settings**, click the RDP inbound rule. Set **Source** to `My IP address`, save.
+**1.8 Point the VNet at the DC.** `vnet-meridian`, **DNS servers**, **Custom**, `10.20.0.4`, save.
 
-**Screenshot `02-nsg-rdp-my-ip.png`:** the inbound rules list showing RDP restricted to a single source IP (blur the IP).
+**1.9 Deploy MFG-MGMT01** the same way, with these differences: name `MFG-MGMT01`, image **Windows Server 2022 Datacenter: Azure Edition** (the Desktop Experience one, not Core), the existing `vnet-meridian` and `snet-identity`, and a static private IP of `10.20.0.5`.
 
-**1.8 Make the private IP static.** VM, **Networking**, click the network interface, **IP configurations**, `ipconfig1`, set assignment to **Static** (keep the address, usually `10.20.1.4`), save. A domain controller's address must never change.
+**Screenshot `01-azure-vm-overview.png`:** the resource group or Virtual machines list showing both servers. Crop out the subscription ID.
+
+**1.10 Lock RDP to your IP.** On your Mac, open Terminal and run `curl -4 https://api.ipify.org`. Use that address, not the one a browser shows: Safari's iCloud Private Relay hides your real IP, and an NSG rule built from it will block you. For each VM: **Networking**, **Network settings**, click the RDP inbound rule, **Source** `IP Addresses`, paste the address, save.
+
+**Screenshot `02-nsg-rdp-my-ip.png`:** the inbound rules showing RDP restricted to a single source IP (blur the IP).
 
 ---
 
-## Phase 2: Connect from the Mac and install tooling
+## Phase 2: Connect from the Mac
 
-**2.1** Install **Windows App** (Microsoft's Remote Desktop app) from the Mac App Store. **+**, **Add PC**, enter the VM's public IP, add the `mfgadmin` credential, connect.
+**2.1** Install **Windows App** (Microsoft's Remote Desktop app) from the Mac App Store. **+**, **Add PC**, add both servers by public IP, with the `mfgadmin` credential.
 
-**2.2** On the VM, open **Windows PowerShell** as Administrator and run:
+**2.2** Connect to **MFG-DC01**. Server Core opens a command prompt instead of a desktop. That's expected. Everything on the DC happens in Phase 3, and after that you will rarely sign in to it.
+
+---
+
+## Phase 3: Build the forest and join the management server
+
+**3.1 Promote MFG-DC01.** In the DC's command prompt, type `powershell`, then:
 
 ```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/ZayLinux26/meridian-jml-engine/main/lab/01-Install-MeridianForest.ps1 -OutFile $env:TEMP\forest.ps1
+& $env:TEMP\forest.ps1
+```
+
+Enter a DSRM password when prompted. The server reboots in a few minutes. From now on its admin account is `MERIDIAN\mfgadmin`.
+
+**3.2 Join MFG-MGMT01 to the domain.** Connect to MFG-MGMT01 (it has a normal desktop). Open **Windows PowerShell** as Administrator:
+
+```powershell
+Resolve-DnsName meridianfg.internal          # should answer 10.20.0.4; if not, restart the VM so it picks up the VNet DNS
+Add-Computer -DomainName meridianfg.internal -Credential MERIDIAN\mfgadmin -Restart
+```
+
+**3.3** Reconnect to MFG-MGMT01 as **`MERIDIAN\mfgadmin`** (the domain account, not the local one). Every remaining step happens on MFG-MGMT01 as this user.
+
+**3.4 Install the admin tools and the engine's tooling.** Windows PowerShell as Administrator:
+
+```powershell
+Install-WindowsFeature RSAT-AD-Tools, RSAT-DNS-Server
 Set-ExecutionPolicy -Scope Process Bypass -Force
 Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/ZayLinux26/meridian-jml-engine/main/lab/00-Install-Tooling.ps1 -OutFile $env:TEMP\tooling.ps1
 & $env:TEMP\tooling.ps1
 ```
 
-This installs PowerShell 7, Git, the Graph authentication module and Pester.
+This installs the latest PowerShell 7, Git, the Graph authentication module and Pester. (The current Graph module needs a recent PowerShell; an older 7.x fails with a `System.Text.Json` error.)
 
-**2.3** Close that window. From the Start menu open **PowerShell 7 (x64)** as Administrator. Every command from here on runs in PowerShell 7.
+**3.5** Close that window. From the Start menu open **PowerShell 7 (x64)** as Administrator. Every command from here on runs in PowerShell 7 on MFG-MGMT01.
 
 ```powershell
 git clone https://github.com/ZayLinux26/meridian-jml-engine.git C:\Lab\meridian-jml-engine
 Set-Location C:\Lab\meridian-jml-engine
-```
-
----
-
-## Phase 3: Build the Meridian forest
-
-**3.1 Promote to a domain controller**
-
-```powershell
-.\lab\01-Install-MeridianForest.ps1
-```
-
-Enter a DSRM password when prompted. The server reboots in a few minutes.
-
-**3.2** Reconnect with Windows App. The username is now `MERIDIAN\mfgadmin`, same password.
-
-**3.3 Point the VNet at the DC.** In the portal: `vnet-meridian`, **DNS servers**, **Custom**, `10.20.1.4`, save. Then restart the VM once so it picks up the setting.
-
-**3.4 Verify**
-
-```powershell
 Get-ADDomain | Format-List DNSRoot, NetBIOSName, DomainMode, PDCEmulator
 ```
 
-**Screenshot `03-domain-controller-ready.png`:** that output (or Server Manager showing AD DS and DNS with green status).
+**Screenshot `03-domain-controller-ready.png`:** the `Get-ADDomain` output, read remotely from the management server.
 
 ---
 
@@ -191,7 +205,7 @@ In ADUC, **View**, enable **Advanced Features**. Right-click `Meridian`, **Prope
 
 ## Phase 5: Entra side (groups and the app registration)
 
-Both scripts sign in with a **device code**: they print a URL and a code. Open the URL on your Mac, enter the code, sign in as your Global Administrator.
+Both scripts open a browser sign-in on MFG-MGMT01 (it can hide behind other windows). Sign in as your Global Administrator.
 
 **5.1 Birthright groups**
 
@@ -209,7 +223,7 @@ In the Entra admin center, **Groups**, **All groups**, search `SG-MFG`.
 .\lab\04-New-JmlAppRegistration.ps1 -TenantId <your-tenant-id>
 ```
 
-It creates a certificate on the VM (private key cannot be exported), registers `MFG-JML-Engine`, grants admin consent for `User.ReadWrite.All` and `GroupMember.ReadWrite.All`, and prints three lines. **Copy those three lines**; you need them in Phase 7.
+It creates a certificate in `MERIDIAN\mfgadmin`'s store on MFG-MGMT01 (private key cannot be exported), registers `MFG-JML-Engine`, grants admin consent for `User.ReadWrite.All` and `GroupMember.ReadWrite.All`, and prints three lines. **Copy those three lines**; you need them in Phase 7.
 
 In the Entra admin center, **App registrations**, **All applications**, `MFG-JML-Engine`:
 
@@ -221,13 +235,13 @@ In the Entra admin center, **App registrations**, **All applications**, `MFG-JML
 
 ## Phase 6: Entra Cloud Sync
 
-**6.1** On the VM, open Edge and sign in to entra.microsoft.com. Go to **Entra ID**, **Entra Connect**, **Cloud sync**, **Agents**, **Download on-premises agent**, accept, and run the installer.
+**6.1** On MFG-MGMT01, open Edge and sign in to entra.microsoft.com. Go to **Entra ID**, **Entra Connect**, **Cloud sync**, **Agents**, **Download on-premises agent**, accept, and run the installer.
 
 **6.2** In the installer: choose **Microsoft Entra Connect cloud sync**, sign in with your Global Administrator, let it **create a gMSA**, then **Add directory** `meridianfg.internal` using `MERIDIAN\mfgadmin`. Finish. (Screen names shift a little between agent versions; the flow stays the same.)
 
 **6.3** Back in the portal, **Cloud sync**, **Agents**: the agent shows **Active**.
 
-**Screenshot `09-cloud-sync-agent.png`:** the Agents page with MFG-DC01 active.
+**Screenshot `09-cloud-sync-agent.png`:** the Agents page with MFG-MGMT01 active. (The agent isn't supported on Server Core, which is one more reason it lives on the management server.)
 
 **6.4** **Configurations**, **New configuration**, **AD to Microsoft Entra ID sync**, select `meridianfg.internal`, keep **Enable password hash sync** on, **Create**.
 
@@ -242,6 +256,10 @@ Save. Then **Review and enable**, **Enable configuration**.
 **Screenshot `10-cloud-sync-scope.png`:** the configuration overview showing the OU scope and Enabled status.
 
 Scoping to `OU=Meridian` keeps the built-in `mfgadmin` and system accounts out of the cloud.
+
+Add **only** the parent `OU=Meridian`, not the department OUs one by one. Cloud Sync deletes the cloud account of anyone who moves outside the scope, so a list that leaves out `OU=Disabled Users` turns every termination into a soft-delete in Entra. For a regulated firm that starts the 30-day clock on the leaver's mailbox and files without anyone deciding it should. The live lab hit exactly this (see the README's lessons section).
+
+**6.6 Set the accidental-deletion threshold.** In the configuration's **Properties**, keep **Prevent accidental deletions** on with a low threshold (the lab uses the default). It's Cloud Sync's version of the engine's circuit breaker.
 
 ---
 
@@ -456,9 +474,26 @@ To get the lab back to a clean day 3 state, apply day 3 again.
 
 ---
 
+## Resuming after the VMs were stopped
+
+1. Portal: start **MFG-DC01** first, wait until it's running, then **MFG-MGMT01**.
+2. If RDP fails, check your IP (`curl -4 https://api.ipify.org`) against the NSG rules.
+3. Entra admin center, **Cloud sync**, **Configurations**: if the status isn't healthy, click **Restart provisioning**.
+4. On MFG-MGMT01, in PowerShell 7:
+
+```powershell
+Set-Location C:\Lab\meridian-jml-engine
+git pull
+Import-Module .\src\MeridianJML\MeridianJML.psd1 -Force
+$cfg = '.\config\jml.config.psd1'
+Connect-JmlGraph -ConfigPath $cfg | Format-List AppName, AuthType
+```
+
+5. Run a plan with the last feed you applied. It should show `NoChange` for everyone before you continue.
+
 ## Cost and cleanup
 
-- **Stop** the VM from the portal when you finish a session (status must say *Stopped (deallocated)*, which stops compute billing). Auto-shutdown catches the nights you forget.
+- **Stop** both VMs from the portal when you finish a session (status must say *Stopped (deallocated)*, which stops compute billing). Auto-shutdown catches the nights you forget.
 - To delete everything: portal, `rg-meridian-iam-lab`, **Delete resource group**. In Entra, delete the `MFG-JML-Engine` app registration, the SG-MFG groups, the synced users and the Cloud Sync configuration.
 
 ## Troubleshooting
@@ -470,4 +505,11 @@ To get the lab back to a clean day 3 state, apply day 3 again.
 | `Insufficient privileges` from Graph | Admin consent missing. App registration, API permissions, **Grant admin consent**. |
 | Entra groups never get added for hybrid users | Cloud Sync has not created the users yet. Check Cloud sync, provisioning logs. Scope must include `OU=Meridian`. |
 | Synced users show a different UPN | The UPN suffix in AD must match a verified tenant domain. Re-run Phase 4.2 with the right `-UpnSuffix`. |
+| A new AD user stays `PendingSync` for more than about 10 minutes, and **Provision on demand** says `JoinNotFound` | Cloud Sync's saved state is stale. **Cloud sync**, **Configurations**, your config, **Restart provisioning**, then wait 10 to 15 minutes for the full cycle. Provision on demand keeps failing until that cycle finishes. |
+| The configuration status says **Quarantine** | Usually after the VMs were stopped for a while. Fix whatever the status message names, then **Restart provisioning**. |
+| A leaver disappears from Entra instead of showing as disabled | The Cloud Sync scope doesn't include `OU=Disabled Users`. Set the scope to just `OU=Meridian` (6.5). Cloud Sync restores the same account from Deleted users on its next cycle. |
+| Two contractors `RolledBack` with a 404 right after creation | Entra replication lag. Fixed in the engine (writes to a just-created user retry 404s); pull the latest code. |
+| `Invoke-MgGraphRequest: Cannot bind parameter 'Method'` | A stray character after the closing quote of the URI, often a `\` from copying. Retype the end of the command. |
+| RDP times out | Your public IP changed or came from iCloud Private Relay. Run `curl -4 https://api.ipify.org` in Terminal and update both NSG rules. |
+| `Could not load file or assembly 'System.Text.Json'` | PowerShell is too old for the current Graph module. Re-run `lab/00-Install-Tooling.ps1`, which installs the latest PowerShell 7. |
 | Certificate not found on connect | Run the engine as the same Windows user that ran `04-New-JmlAppRegistration.ps1` (the cert lives in that user's store). |

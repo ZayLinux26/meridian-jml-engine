@@ -85,20 +85,77 @@ flowchart LR
 
 Details, action catalog and failure matrix: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Screenshots
+## Proven on a live lab
 
-> Captured from the live lab: Windows Server 2022 DC in Azure, Entra Cloud Sync, and a Microsoft Entra tenant.
+Everything below was captured from a real hybrid environment, not the simulator:
+
+- **MFG-DC01:** Windows Server 2022 **Core** domain controller for `meridianfg.internal` (no desktop, the way production DCs should run)
+- **MFG-MGMT01:** Windows Server 2022 management server that runs the engine, RSAT and the Entra Cloud Sync agent, so admins never log on to the DC
+- **Microsoft Entra ID** tenant, synced with Entra Cloud Sync and scoped to `OU=Meridian`
+- Both VMs in one Azure VNet (`10.20.0.0/24`), with RDP locked to a single admin IP
+
+### The story in screenshots
+
+**Day 1: joiners.** Eleven employees and two contractors start. The plan shows every change before anything happens. The second run finds nothing to do.
+
+| Plan (dry run) | Apply |
+|---|---|
+| ![Day 1 plan](docs/screenshots/12-day1-plan.png) | ![Day 1 apply](docs/screenshots/13-day1-apply.png) |
+| **After Cloud Sync: Entra groups added** | **Same feed again: 0 actions** |
+| ![Reconcile](docs/screenshots/16-day1-reconcile-entra-groups.png) | ![Idempotent](docs/screenshots/17-day1-idempotent-nochange.png) |
+
+**Day 2: a mover, and a joiner that fails halfway.** Elena moves from Treasury to Compliance and loses wire-release access the same day. Michael's account creation is broken on purpose, and the engine deletes the half-built account instead of leaving it behind.
+
+| Mover plan: old access removed | Joiner rolled back |
+|---|---|
+| ![Mover](docs/screenshots/18-day2-mover-plan.png) | ![Rollback](docs/screenshots/19-day2-joiner-rollback.png) |
+
+![Elena's groups after the move](docs/screenshots/20-elena-groups-after-move.png)
+
+**Day 3: a leaver, with a failure in the middle.** Tom is disabled and his Entra sessions are revoked within a second. The OU move then fails on purpose, so the "Terminated" stamp is held back and the next run finishes the job.
+
+| Contained despite the failure | Per-action audit trail |
+|---|---|
+| ![Contained](docs/screenshots/21-day3-leaver-contained.png) | ![Audit](docs/screenshots/22-day3-audit-trail.png) |
+| **Next run finishes the job** | **Entra: blocked, sessions revoked** |
+| ![Completed](docs/screenshots/23-day3-leaver-completed.png) | ![Entra blocked](docs/screenshots/24-entra-leaver-blocked.png) |
+
+**Safety rails and break-glass.**
+
+| A bad HR file would terminate 57% of staff | Bad rows rejected, orphans flagged not disabled |
+|---|---|
+| ![Safety limit](docs/screenshots/25-safety-limit.png) | ![Rejections](docs/screenshots/26-feed-rejections.png) |
+| **Rollback preview, irreversible steps called out** | **Test suite** |
+| ![Undo](docs/screenshots/27-undo-whatif.png) | ![Pester](docs/screenshots/28-pester-green.png) |
+
+<details>
+<summary><b>Lab build screenshots (Azure, AD, Entra, app registration, Cloud Sync)</b></summary>
 
 | | |
 |---|---|
-| **Day 1 plan (dry run)** | **Second run: nothing to do** |
-| ![Plan](docs/screenshots/12-day1-plan.png) | ![Idempotent](docs/screenshots/17-day1-idempotent-nochange.png) |
-| **Mover strips old-role access** | **Joiner rolled back after a failure** |
-| ![Mover](docs/screenshots/18-day2-mover-plan.png) | ![Rollback](docs/screenshots/19-day2-joiner-rollback.png) |
-| **Leaver contained despite a failure** | **Audit trail from the journal** |
-| ![Contained](docs/screenshots/21-day3-leaver-contained.png) | ![Audit](docs/screenshots/22-day3-audit-trail.png) |
-| **Circuit breaker stops a bad extract** | **Synced users in Entra** |
-| ![Breaker](docs/screenshots/25-safety-limit.png) | ![Entra](docs/screenshots/15-entra-synced-users.png) |
+| ![Azure VMs](docs/screenshots/01-azure-vm-overview.png) | ![NSG rule](docs/screenshots/02-nsg-rdp-my-ip.png) |
+| ![DC ready](docs/screenshots/03-domain-controller-ready.png) | ![OU structure](docs/screenshots/04-aduc-meridian-ous.png) |
+| ![AD delegation](docs/screenshots/05-ad-delegation.png) | ![Entra groups](docs/screenshots/06-entra-birthright-groups.png) |
+| ![App permissions](docs/screenshots/07-app-permissions-granted.png) | ![Certificate only](docs/screenshots/08-app-certificate-no-secrets.png) |
+| ![Cloud Sync agent](docs/screenshots/09-cloud-sync-agent.png) | ![Cloud Sync scope](docs/screenshots/10-cloud-sync-scope.png) |
+| ![App-only Graph](docs/screenshots/11-graph-app-only-context.png) | ![ADUC users](docs/screenshots/14-aduc-day1-users.png) |
+| ![Synced users](docs/screenshots/15-entra-synced-users.png) | ![GitHub Actions](docs/screenshots/29-github-actions-green.png) |
+
+</details>
+
+### What the live lab taught me
+
+The simulator and the contract tests passed from the start. The real tenant still found four things they didn't.
+
+**1. Entra replication lag.** Right after `POST /users` creates a contractor, the next write (adding a group, setting a manager) can return 404 for a few seconds because the new object hasn't replicated yet. On the first live run, two contractors rolled back over it. The fix: Graph writes against a just-created user retry 404s with backoff, and later steps address the user by object ID instead of UPN. The contract tests now simulate that lag.
+
+**2. A rollback has to survive the same lag.** The compensating delete for a failed contractor hit the same 404, treated it as "already gone", and left an active account behind. Deletes now retry before they accept "not found". A rollback that quietly fails is worse than no rollback.
+
+**3. Sync scope is part of your leaver process.** Tom vanished from Entra after his termination instead of showing as disabled. The Cloud Sync scope listed individual OUs, and `OU=Disabled Users` wasn't one of them, so moving him there pushed him out of scope and Cloud Sync soft-deleted his cloud account. For a bank that's a records-retention problem: the 30-day clock on his mailbox and files starts without anyone deciding it should. Scoping to the parent `OU=Meridian` brought him back as the same, disabled account. Deletion should be a deliberate step after a retention period, not a side effect of an OU move. I caught it when a Graph lookup on Tom, meant to confirm `accountEnabled: false`, came back 404 instead.
+
+![Leaver soft-deleted by a sync scope gap](docs/screenshots/24a-scope-lesson-deleted-user.png)
+
+**4. The sync engine can get stuck, and the JML engine has to wait it out.** Twice, a new AD user never appeared in Entra and on-demand provisioning answered `JoinNotFound`. Restarting provisioning in Cloud Sync cleared it. Meanwhile the engine reported those users as `PendingSync` and changed nothing in the cloud. It never tried to create a duplicate cloud account to work around sync.
 
 ## Quick start
 
@@ -121,7 +178,7 @@ Invoke-JmlRun -ConfigPath $cfg -FeedPath ./data/hr-feed-day3-leavers.csv -Simula
 
 ### Run it against a real hybrid lab
 
-Follow [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md). It builds the Azure VM, the forest, Cloud Sync and the app registration, then walks the three HR days end to end.
+Follow [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md). It builds the two Azure VMs, the forest, Cloud Sync and the app registration, then walks the three HR days end to end.
 
 ## Commands
 

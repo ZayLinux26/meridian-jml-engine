@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Installs the latest PowerShell 7, Git and the Graph authentication module on MFG-DC01.
+    Installs the latest PowerShell 7, Git and the Graph authentication module on MFG-MGMT01.
 .DESCRIPTION
     Run in the built-in Windows PowerShell 5.1 (as Administrator) right after
     the VM is created. Everything after this runs in PowerShell 7 (pwsh).

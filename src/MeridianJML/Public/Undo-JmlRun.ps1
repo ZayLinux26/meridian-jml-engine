@@ -57,16 +57,16 @@ function Undo-JmlRun {
         Write-Host ''
         Write-Host "  $($item.EmployeeId)  $($item.DisplayName)  [undo $($item.Operation)]" -ForegroundColor Yellow
         foreach ($a in $succeeded) {
-            $step = [ordered]@{ Of = "$($a.System).$($a.Type)"; Description = $a.Description; Status = $null; Error = $null }
+            $step = [ordered]@{ Of = "$($a.System).$($a.Type)"; Description = $a.Description; Reverse = $(if ($a.Undo) { Format-JmlUndoDescription $a.Undo }); Status = $null; Error = $null }
             if (-not $a.Undo) {
                 $step.Status = 'Irreversible'
                 Write-Host "    [skip] $($a.System).$($a.Type) is irreversible: $($a.Description)" -ForegroundColor DarkYellow
             }
-            elseif ($PSCmdlet.ShouldProcess("$($item.EmployeeId) ($($item.DisplayName))", "Undo $($a.System).$($a.Type): $($a.Description)")) {
+            elseif ($PSCmdlet.ShouldProcess("$($item.EmployeeId) ($($item.DisplayName))", "$($a.Undo.System).$($a.Undo.Type): $(Format-JmlUndoDescription $a.Undo)   (reverses $($a.System).$($a.Type))")) {
                 try {
                     [void](Invoke-JmlDirectoryAction -System $a.Undo.System -Type $a.Undo.Type -Params $a.Undo.Params -EmployeeId $item.EmployeeId -SkipFaultInjection)
                     $step.Status = 'Reverted'
-                    Write-JmlLog -Level AUDIT -EmployeeId $item.EmployeeId -Action "$($a.Undo.System).$($a.Undo.Type)" -Message "Reverted $($a.System).$($a.Type): $($a.Description)"
+                    Write-JmlLog -Level AUDIT -EmployeeId $item.EmployeeId -Action "$($a.Undo.System).$($a.Undo.Type)" -Message "Reverted $($a.System).$($a.Type): $(Format-JmlUndoDescription $a.Undo)"
                 }
                 catch {
                     $step.Status = 'Failed'; $step.Error = $_.Exception.Message

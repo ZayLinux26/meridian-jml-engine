@@ -209,7 +209,9 @@ function Invoke-JmlEntraOperation {
             return $created.id
         }
         'DeleteUser' {
-            [void](Invoke-JmlGraph -Method DELETE -Uri "users/$([uri]::EscapeDataString($Params.UserRef))" -AllowNotFound)
+            # Retry first: right after a create, a 404 usually means "not replicated
+            # yet", not "already gone". Treating it as gone would leave an orphan.
+            [void](Invoke-JmlGraph -Method DELETE -Uri "users/$([uri]::EscapeDataString($Params.UserRef))" -RetryNotFound -AllowNotFound)
         }
         'SetAttributes' {
             $body = @{}
