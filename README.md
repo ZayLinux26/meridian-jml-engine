@@ -1,238 +1,396 @@
-# Project 1: User Lifecycle Management (Joiner / Mover / Leaver)
+<div align="center">
 
-**Platform:** Microsoft Entra ID
-**Scenario:** Meridian Health Partners (fictional healthcare organization)
-**Date:** May 2026
+# Meridian JML Engine
 
-End-to-end implementation of joiner, mover, and leaver workflows in Microsoft Entra ID. This project covers tenant setup, bulk workforce provisioning, department-based group structure, and the three core scenarios that define identity operations: onboarding a new hire, processing an internal role change, and offboarding a terminated employee. Every action is captured in the Entra audit log to demonstrate compliance-ready IAM work.
+**Joiner-Mover-Leaver identity lifecycle automation for hybrid Active Directory and Microsoft Entra ID**
 
-This is the first of ten projects in my IAM portfolio. The same fictional organization carries across all ten, so the work reads like a year of IAM analyst output at one healthcare company rather than ten disconnected labs.
+![PowerShell](https://img.shields.io/badge/PowerShell-7-5391FE?style=for-the-badge&logo=powershell&logoColor=white)
+![Microsoft Graph](https://img.shields.io/badge/Microsoft%20Graph-v1.0-0078D4?style=for-the-badge&logo=microsoft&logoColor=white)
+![Entra ID](https://img.shields.io/badge/Microsoft%20Entra%20ID-Hybrid-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white)
+![Entra Cloud Sync](https://img.shields.io/badge/Entra%20Cloud%20Sync-AD%20to%20Entra-0078D4?style=for-the-badge&logo=microsoft&logoColor=white)
+![Active Directory](https://img.shields.io/badge/Active%20Directory-Windows%20Server%202022-0078D6?style=for-the-badge&logo=windows&logoColor=white)
+![Azure](https://img.shields.io/badge/Azure-Lab-0089D6?style=for-the-badge&logo=microsoftazure&logoColor=white)
+![Pester](https://img.shields.io/badge/Tested%20with-Pester-A61E22?style=for-the-badge&logo=powershell&logoColor=white)
+![Tests](https://img.shields.io/github/actions/workflow/status/ZayLinux26/meridian-jml-engine/tests.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=tests)
+![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
----
+*Part 1 of **The PowerShell IAM / PAM / PIM Series***
 
-## Table of Contents
-
-- [The Organization](#the-organization)
-- [Environment Setup](#environment-setup)
-- [Baseline Workforce](#baseline-workforce)
-- [Group Structure](#group-structure)
-- [Joiner: Onboarding Emily Rodriguez](#joiner-onboarding-emily-rodriguez)
-- [Mover: Promoting Jennifer Williams](#mover-promoting-jennifer-williams)
-- [Leaver: Terminating Michael Brown](#leaver-terminating-michael-brown)
-- [Audit Evidence](#audit-evidence)
-- [Skills Demonstrated](#skills-demonstrated)
-- [Lessons Learned](#lessons-learned)
-- [Repository Contents](#repository-contents)
+</div>
 
 ---
 
-## The Organization
+HR decides who works here. This engine makes Active Directory and Microsoft Entra ID agree with HR every day: it creates accounts for new hires, changes access when people change jobs, and shuts access off when they leave. It shows every change before making it, handles a failure halfway through, and leaves an audit trail an examiner can follow.
 
-Meridian Health Partners is a fictional Chicago-based healthcare organization with 15 baseline employees across six departments: Clinical, IT, Finance, HR, Patient Services, and Administration. The healthcare framing is deliberate. Healthcare operates under HIPAA, which forces strict least-privilege enforcement, regular access reviews, and full auditability on every identity action. Those requirements show up directly in this project's design choices: minimal default privileges, group-based access only, no orphaned permissions after a role change, immediate session revocation on termination.
+It was built for a fictional mid-size bank, Meridian Financial Group, and proven end to end on a live hybrid lab: a Server Core domain controller and a management server in Azure, synced to a real Entra tenant.
 
----
+## Contents
 
-## Environment Setup
-
-A fresh Microsoft Entra ID tenant was provisioned through Azure free account signup. The default "Default Directory" tenant name was renamed to "Meridian Health Partners" for portfolio coherence.
-
-![Entra ID tenant overview](screenshots/01-entra-overview-fresh-tenant.png)
-
-Adding a custom `meridianhealth.onmicrosoft.com` subdomain to make user UPNs read more cleanly was attempted but blocked by tenant licensing. See [Lessons Learned](#lessons-learned) for the full story and the workaround.
-
----
-
-## Baseline Workforce
-
-Fifteen employees were imported in a single bulk operation via **Identity → Users → All users → Bulk create**, using a CSV file in Entra's bulk import format. The CSV included display name, UPN, initial password, job title, department, office location, address, and phone numbers — the same identity attributes that HRIS systems push into IAM platforms during real onboarding integrations.
-
-![Baseline users imported in Entra](screenshots/02-baseline-users-imported.png)
-
-| Department | Users | Count |
-|---|---|---|
-| Clinical | Sarah Chen, Marcus Patel, Jennifer Williams, David Rodriguez, Lisa Thompson | 5 |
-| IT | Robert Kim, Priya Sharma, Thomas Mitchell | 3 |
-| Finance | Amanda Foster, Michael Brown | 2 |
-| HR | Karen O'Brien, Daniel Garcia | 2 |
-| Patient Services | Maria Lopez, James Walker | 2 |
-| Administration | Rachel Davis | 1 |
-
-The full CSV source is available in [`data/baseline-users.csv`](data/baseline-users.csv) for review.
+1. [The enterprise problem](#the-enterprise-problem)
+2. [What this project proves](#what-this-project-proves)
+3. [JML explained](#jml-explained) (reference section)
+4. [How the engine works](#how-the-engine-works)
+5. [Design decisions](#design-decisions)
+6. [Proven on a live lab](#proven-on-a-live-lab)
+7. [What the live lab taught me](#what-the-live-lab-taught-me)
+8. [Running it](#running-it)
+9. [Audit evidence and control mapping](#audit-evidence-and-control-mapping)
+10. [Testing](#testing)
+11. [Repository layout and roadmap](#repository-layout)
 
 ---
 
-## Group Structure
+## The enterprise problem
 
-Six assigned security groups were created in **Identity → Groups → All groups** to mirror Meridian's organizational structure. All groups use the `MHP-` prefix to namespace them and keep them filterable in larger directories. Every baseline user was added to the group matching their department.
+Every large company gets the same identity findings from its auditors, year after year:
 
-![All MHP department groups](screenshots/03-groups-all-mhp-groups.png)
+- **Terminated users who still have access.** HR files the termination on Friday, IT disables the account on Tuesday, and the audit sample finds four days of exposure. In a bank, that's a former employee who could still sign in to the systems that move money.
+- **Access creep.** People change jobs and keep everything from the old one. The analyst who moved from Treasury to Compliance can still release wires, which is also a segregation-of-duties violation.
+- **Half-finished scripts.** A deprovisioning script dies halfway and leaves an account disabled in AD, alive in the cloud, and still in six groups. Nobody can say what state it's in.
+- **No evidence.** Even when IT did the right thing, it can't prove when, who ran it, or from which HR record.
+
+Hybrid identity makes all four harder. Employees live in on-prem Active Directory and sync to Entra ID, contractors often exist only in the cloud, and the sync between the two lags by minutes. A JML process has to handle both directories and the gap between them.
+
+## What this project proves
+
+Each claim links to a screenshot from the live lab.
+
+| Claim | Evidence |
+|---|---|
+| Every change is previewed before it happens | [Day 1 plan](docs/screenshots/12-day1-plan.png) |
+| Running it twice changes nothing the second time | [0 actions on the second run](docs/screenshots/17-day1-idempotent-nochange.png) |
+| A job change removes the old job's access the same day | [Mover plan](docs/screenshots/18-day2-mover-plan.png), [Elena's groups after the move](docs/screenshots/20-elena-groups-after-move.png) |
+| A failed new-hire setup is undone, not left half-built | [Joiner rolled back](docs/screenshots/19-day2-joiner-rollback.png) |
+| A leaver loses access even when a later step breaks | [Leaver contained](docs/screenshots/21-day3-leaver-contained.png) |
+| Access is cut in under a second, with timestamps to prove it | [Audit trail](docs/screenshots/22-day3-audit-trail.png) |
+| Cloud sessions are revoked, not just the AD account | [Entra: blocked, sessions revoked](docs/screenshots/24-entra-leaver-blocked.png) |
+| A corrupted HR file can't lock out the company | [Safety limit](docs/screenshots/25-safety-limit.png) |
+| Bad HR rows are rejected, and missing people aren't disabled | [Feed rejections](docs/screenshots/26-feed-rejections.png) |
+| A wrong termination can be reversed, with honest limits | [Rollback preview](docs/screenshots/27-undo-whatif.png) |
+| The app identity has two Graph permissions and no secrets | [Permissions](docs/screenshots/07-app-permissions-granted.png), [certificate only](docs/screenshots/08-app-certificate-no-secrets.png) |
+
+---
+
+## JML explained
+
+This section is the reference I wanted when I started: what JML is, the words people use for it, and what goes wrong at each stage.
+
+### The lifecycle
 
 ```mermaid
-graph TD
-    T[Meridian Health Partners Tenant] --> C[MHP-Clinical-Staff]
-    T --> I[MHP-IT-Staff]
-    T --> F[MHP-Finance-Staff]
-    T --> H[MHP-HR-Staff]
-    T --> P[MHP-Patient-Services]
-    T --> A[MHP-Administration]
-
-    C --> C1[Sarah Chen]
-    C --> C2[Marcus Patel]
-    C --> C3[Jennifer Williams]
-    C --> C4[David Rodriguez]
-    C --> C5[Lisa Thompson]
-
-    I --> I1[Robert Kim]
-    I --> I2[Priya Sharma]
-    I --> I3[Thomas Mitchell]
+stateDiagram-v2
+    direction LR
+    [*] --> PreHire: HR enters the hire
+    PreHire --> Active: Joiner (start date within 14 days)
+    Active --> Active: Mover (department, title or manager changes)
+    Active --> Terminated: Leaver
+    Terminated --> Active: Rehire
 ```
 
-Group-based assignment is the only way users receive access in this design. No direct user-to-resource permissions exist anywhere. This is the foundation that Project 2 (RBAC Design) builds on.
+| Stage | Trigger in HR | What IT must do | What goes wrong without automation |
+|---|---|---|---|
+| **Joiner** | New worker with a start date | Create the account in the right place, give the access everyone in that role gets, set the manager | The new hire can't work on day one, or someone copies a coworker's account and inherits years of extra access |
+| **Mover** | Department, title or manager changes | Add the new role's access **and remove the old role's access** | Access creep and segregation-of-duties conflicts, the most common audit finding |
+| **Leaver** | Status changes to Terminated | Cut access immediately (disable, kill sessions), then clean up (groups, manager, OU, records) | Former employees keep access, and cloud sessions stay alive for hours after the AD account is disabled |
+| **Rehire** | A terminated worker comes back | Re-enable the same identity and restore current access | Duplicate accounts, lost history, a broken audit trail |
 
-![MHP-Clinical-Staff group members](screenshots/03-groups-clinical-staff-members.png)
+### Terms you'll see in IAM work
 
----
+| Term | Meaning | Where it shows up here |
+|---|---|---|
+| **Authoritative source** | The system whose word is final about who works here. Almost always HR (Workday, SuccessFactors, ADP). | The daily HR file in `data/` |
+| **Identity anchor** | The one value that never changes for a person, used to match records across systems. Names and emails change; the HR worker ID doesn't. | `employeeID` in AD, `employeeId` in Entra |
+| **Birthright access** | Access everyone gets automatically because of their job attributes, with no request or approval. | `config/access-model.json` |
+| **Requested access** | Access someone asks for and a manager or owner approves. Handled by a ticket or an IGA tool, not by JML. | Left alone: the engine only removes groups it manages |
+| **RBAC** | Role-based access control: access follows the role, not the person. | Department and job title layers in the access model |
+| **AGDLP** | Microsoft's AD group pattern. **A**ccounts go in **G**lobal groups (who you are), which nest into **D**omain **L**ocal groups (what you can reach), which get **P**ermissions. | `GG-MFG-*` role groups nested into resource groups by `lab/02` |
+| **Hybrid identity** | Users live in on-prem AD and are synced to Entra ID. AD is the "source of authority" for synced users, so their attributes can only be changed in AD. | Employees are hybrid; contractors are cloud-only |
+| **Entra Cloud Sync** | Microsoft's lightweight agent that copies AD users to Entra on a short cycle. | Agent on MFG-MGMT01, scoped to `OU=Meridian` |
+| **Containment** | The urgent part of a termination: make sure the person can't get in. Disable the account and revoke active sessions. | Steps marked `*` (critical) in leaver output |
+| **Session revocation** | Disabling an account doesn't sign someone out of Teams or Outlook. Revoking sessions invalidates their refresh tokens, so cloud apps demand a new sign-in, which then fails. | `POST /users/{id}/revokeSignInSessions` |
+| **Orphan account** | An enabled account with no matching active HR record. It could be a leaver HR forgot, or a service account. A human has to decide. | Reported every run, never auto-disabled |
+| **Drift** | Someone changed access by hand outside the process. | Managed groups added by hand get removed |
+| **Idempotent** | Running the same thing twice has the same result as running it once. The second run does nothing. | Screenshot 17 |
+| **Compensation** | Undoing the steps that already succeeded when a later step fails, so nothing is left half-done. | Joiner and mover rollback, screenshot 19 |
+| **Temporary Access Pass (TAP)** | A time-limited passcode in Entra that lets a user sign in and set up their credentials. | Flagged for rehires and reversed terminations |
+| **Access certification** | A periodic review where managers confirm their people's access is still needed. Good JML keeps the list clean, so reviews are short. | CSV report per run |
 
-## Joiner: Onboarding Emily Rodriguez
+### Worked example: one person through the lifecycle
 
-**Scenario:** Emily Rodriguez is a new Registered Nurse starting at Meridian Health Partners on May 27, 2026. HR has sent the onboarding ticket to the IAM team. The goal is to provision her account, grant Clinical Staff access, and confirm she's ready for day one.
+Elena Sokolova joins Finance as a Treasury Analyst. The access model stacks four layers: everyone, employment type, department and job title.
 
-**Actions:**
-- Created her user account via **Identity → Users → New user → Create new user**
-- Used **auto-generate password** rather than setting one manually — IAM analysts should never know user passwords
-- Populated job information: Registered Nurse, Clinical department, Tower A - Floor 4
-- Set hire date to May 27, 2026 (this attribute is what scheduled offboarding workflows trigger off of in larger environments)
-- Added Emily to **MHP-Clinical-Staff**
+| Layer | AD groups | Entra groups |
+|---|---|---|
+| Everyone | | `SG-MFG-AllStaff` |
+| Employee | `GG-MFG-Employees` | `SG-MFG-Lic-M365` |
+| Department: Finance | `GG-MFG-Finance` | `SG-MFG-App-ERP` |
+| Title: Treasury Analyst | `GG-MFG-Treasury-WireRelease` | |
 
-![Emily Rodriguez profile after creation](screenshots/04-joiner-emily-profile-created.png)
+**Day 1 (Joiner):** the engine creates `esokolova` in `OU=Finance`, sets Marcus Bell as her manager and adds the three AD groups. Cloud Sync copies her to Entra a few minutes later, and the next run adds her three Entra groups.
 
-![Emily added to MHP-Clinical-Staff (6 members)](screenshots/04-joiner-emily-added-to-clinical.png)
+**Day 2 (Mover):** HR moves her to Compliance as a Risk Analyst. The engine works out her access from scratch and applies only the difference: new manager, move to `OU=Compliance`, add `GG-MFG-Compliance` and `SG-MFG-App-GRC`, and **remove** `GG-MFG-Finance`, `GG-MFG-Treasury-WireRelease` and `SG-MFG-App-ERP`. She can't release wires after that run.
 
-After completion, Clinical-Staff went from 5 to 6 members, and Emily has the access she needs for her role and nothing more.
-
----
-
-## Mover: Promoting Jennifer Williams
-
-**Scenario:** Jennifer Williams has been a Nurse Manager in Clinical. Effective May 27, 2026, she's been promoted into IT as Identity Operations Lead — a real career pivot across departments. Her access must reflect the new role: revoke clinical-staff access, grant IT-staff access, update job information.
-
-This is the scenario that separates competent IAM analysts from sloppy ones. Adding the new access is easy. **Remembering to remove the old access is the test.** Forgotten access from prior roles is one of the most common audit findings in any organization.
-
-**Before:**
-
-![Jennifer's group membership before the role change — Clinical-Staff](screenshots/05-mover-jennifer-before-groups.png)
-
-**Actions:**
-- Updated job title from `Nurse Manager` to `Identity Operations Lead`
-- Updated department from `Clinical` to `IT`
-- Updated office location from `Tower A - Floor 4` to `Tower B - Floor 7`
-- **Removed** Jennifer from `MHP-Clinical-Staff` (least privilege: she no longer needs this access)
-- **Added** Jennifer to `MHP-IT-Staff`
-
-![Property edits applied — new IT role values](screenshots/05-mover-jennifer-properties-edit.png)
-
-**After:**
-
-![Jennifer's group membership after the role change — IT-Staff only](screenshots/05-mover-jennifer-after-groups.png)
-
-Group counts also tell the story: MHP-Clinical-Staff returned to 5 members, MHP-IT-Staff grew from 3 to 4.
+**Day 3 (Leaver), shown with Tom Brennan:** containment first (disable in AD, revoke Entra sessions), then cleanup (random password, remove every group, clear the manager, move to `OU=Disabled Users`), then a "Terminated" stamp on the account as the very last step.
 
 ---
 
-## Leaver: Terminating Michael Brown
+## How the engine works
 
-**Scenario:** Michael Brown, Billing Specialist in Finance, has been terminated effective immediately on May 27, 2026. Per Meridian's offboarding policy, his identity must be deactivated, all active sessions revoked, group memberships stripped, and the account soft-deleted with a 30-day recovery window before permanent removal.
-
-This is the most security-critical scenario. Order of operations matters here because the wrong sequence creates windows where an attacker (or a disgruntled employee) can still authenticate. The correct order:
-
-1. **Block sign-in first** — stops new authentications immediately
-2. **Revoke active sessions** — invalidates existing refresh tokens; without this, current sessions remain valid for up to 90 minutes
-3. **Strip group memberships** — protects against the scenario where sign-in gets re-enabled by mistake or insider threat
-4. **Soft-delete** — moves to recoverable state for 30 days
-
-![Michael Brown's account with sign-in blocked](screenshots/06-leaver-michael-block-signin.png)
-
-![Active session revocation confirmed](screenshots/06-leaver-michael-revoke-sessions.png)
-
-![MHP-Finance-Staff after removal — only Amanda Foster remains](screenshots/06-leaver-michael-finance-removed.png)
-
-![Deleted users page showing Michael with 30-day recovery countdown](screenshots/06-leaver-michael-deleted-users.png)
-
-The 30-day soft-delete window matches real enterprise offboarding policy. It gives HR time to recover email, OneDrive files, and any business data the terminated employee owned. After 30 days, Entra permanently deletes the account.
-
----
-
-## Audit Evidence
-
-Every action above generated entries in the Entra audit log. The audit log is filterable by date, category, and actor, and it's what compliance auditors review during a HIPAA, SOC 2, or ISO 27001 assessment.
-
-![Entra audit log showing JML activity](screenshots/07-audit-jml-activity-log.png)
-
-The captured log entries cover:
-
-- User creation (Emily Rodriguez)
-- User property updates (Jennifer Williams)
-- Group membership additions and removals (all three scenarios)
-- Account disablement (Michael Brown)
-- Account deletion (Michael Brown)
-
-For real-world deployments these logs would feed into a SIEM (Sentinel, Splunk, etc.) for long-term retention and correlation with other security events. That work is scoped to Project 8 (Identity Monitoring & Anomaly Detection) later in this portfolio.
-
----
-
-## Skills Demonstrated
-
-- Microsoft Entra ID administration (tenant configuration, user management, group management)
-- Bulk user provisioning via CSV import
-- Identity lifecycle management (Joiner / Mover / Leaver)
-- Role-based access control (RBAC) via security groups
-- Principle of least privilege enforcement during role transitions
-- Account deactivation, session revocation, and soft-deletion workflows
-- Audit log review and evidence capture for compliance
-- Healthcare-specific IAM considerations (HIPAA-aligned access controls)
-- IAM operational documentation
-
----
-
-## Lessons Learned
-
-Real IAM work hits real platform limits. This project surfaced four of them, and the workarounds are part of the skill.
-
-**Microsoft 365 Developer Program no longer freely accessible.** The standard recommendation for a free Entra lab was to sign up for the M365 Developer Program, which provided a sandbox tenant with E5 licenses. Microsoft restricted this in 2024 to Visual Studio Professional/Enterprise subscribers and AI Cloud Partner Program members. I had to pivot to an Azure free account, which still provides a free Entra ID tier with all the functionality this project needed.
-
-**Adding custom `.onmicrosoft.com` subdomains requires a Microsoft 365 license.** I wanted the user UPNs to read `firstname.lastname@meridianhealth.onmicrosoft.com` for narrative cleanliness. The Entra admin center pointed me to `admin.microsoft.com` to make that change. The M365 admin center requires at least one M365 paid license attached to the tenant, which an Azure-free tenant doesn't have. Decision: skip the cosmetic change, move forward with the auto-generated tenant domain. The lab functionality is unaffected.
-
-**Entra bulk-create CSV ignores attributes outside the standard template.** I assumed I could add a `companyName` column to the bulk import CSV and have it populate. Microsoft's documentation confirms additional columns are silently ignored. To populate Company name in bulk requires Microsoft Graph PowerShell, which is the topic of Project 10. For Project 1, this attribute was left blank rather than manually editing 15 users.
-
-**Default Entra UI hides job attributes.** After bulk import I couldn't initially see Job title or Department on the All Users list — the data imported correctly but the default view doesn't include those columns. The fix is `Manage view → Edit columns` to add them. Additionally, the user profile **Overview** tab shows only basic identity fields; **Properties** is where the rich job information lives. Both are non-obvious for first-time Entra admins and worth knowing.
-
----
-
-## Repository Contents
-
-```
-entra-user-lifecycle-jml/
-├── README.md                           # This file
-├── data/
-│   └── baseline-users.csv              # CSV source for bulk import
-└── screenshots/                        # All evidence captures
-    ├── 01-entra-overview-fresh-tenant.png
-    ├── 02-baseline-users-imported.png
-    ├── 03-groups-all-mhp-groups.png
-    ├── 03-groups-clinical-staff-members.png
-    ├── 04-joiner-emily-profile-created.png
-    ├── 04-joiner-emily-added-to-clinical.png
-    ├── 05-mover-jennifer-before-groups.png
-    ├── 05-mover-jennifer-properties-edit.png
-    ├── 05-mover-jennifer-after-groups.png
-    ├── 06-leaver-michael-block-signin.png
-    ├── 06-leaver-michael-revoke-sessions.png
-    ├── 06-leaver-michael-finance-removed.png
-    ├── 06-leaver-michael-deleted-users.png
-    └── 07-audit-jml-activity-log.png
+```mermaid
+flowchart LR
+    HR[(HR snapshot CSV)] --> V[Validate feed<br/>schema, duplicates, SHA-256]
+    V --> P[Planner<br/>desired state vs current state]
+    AD[(Active Directory<br/>meridianfg.internal)] -- one LDAP query --> P
+    EN[(Microsoft Entra ID)] -- Graph v1.0 --> P
+    P --> CB{Circuit breaker}
+    CB -- tripped --> X[Abort, journal, exit 2]
+    CB -- ok --> E[Executor]
+    E -- Atomic --> J[Joiner / Mover / Rehire]
+    E -- Fail-secure --> L[Leaver]
+    J & L --> AD
+    J & L --> EN
+    AD -- Entra Cloud Sync --> EN
+    E --> A[(Journal JSON<br/>JSONL audit log<br/>CSV report)]
 ```
 
+1. **Read the HR file** and reject bad rows with a reason (unknown department, bad date, duplicate ID).
+2. **Read the directories:** one LDAP query for AD, one Graph lookup per worker for Entra.
+3. **Plan:** for each person, work out the access they should have and compare it with what they have. The output is a list of actions, each with its own undo.
+4. **Check the circuit breaker:** too many leavers and the run stops before touching anything.
+5. **Execute** each person as one unit of work, under the failure policy for that event type.
+6. **Write evidence:** a journal, a SIEM-ready log and a CSV report for every run, dry runs included.
+
+| HR event | Hybrid employee (AD, synced to Entra) | Cloud-only contractor (Entra) |
+|---|---|---|
+| **Joiner** | Creates the AD account in the department OU, sets the manager, adds AD groups. After Cloud Sync, adds Entra groups. | Creates the Entra user through Graph, sets the manager, adds Entra groups. |
+| **Mover** | Updates attributes, moves OUs, adds new-role groups and **removes old-role groups** in AD and Entra. | Updates attributes and group membership through Graph. |
+| **Leaver** | Disables and revokes sessions first, then randomizes the password, strips groups, clears the manager, moves to Disabled Users and stamps the record. | Blocks sign-in and revokes sessions first, then strips groups and clears the manager. |
+| **Rehire** | Re-enables, moves back, restores access and flags that a TAP is needed. | Re-enables sign-in and restores access. |
+| **Drift** | Removes managed groups someone added by hand. | Same. |
+
+Component details, the action catalog and the full failure matrix are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ---
 
-**Built by Isaiah Herard** — IAM Analyst | Microsoft SC-300 Identity and Access Administrator
-[Portfolio hub](https://github.com/ZayLinux26/iam-analyst-portfolio) | [LinkedIn](https://www.linkedin.com/in/YOUR-HANDLE)
+## Design decisions
+
+**1. Desired state, not a to-do list.** The engine never asks "did I already do this?" It compares what HR says with what the directory has right now and plans only the difference. There's no state file that can drift away from reality, and a run that crashed is fixed by running it again.
+*Why it matters:* the job can run on a schedule, get retried by an operator at 2 AM or rerun after an outage, and it can't double-apply anything.
+
+**2. Two failure policies, because joiners and leavers fail differently.**
+
+| | Joiner / Mover / Rehire | Leaver |
+|---|---|---|
+| Policy | **Atomic** | **Fail-secure** |
+| On a failed step | Stop, then undo every completed step in reverse order. The person ends fully changed or exactly as before. | Keep going. Undoing a termination would hand access back to someone who shouldn't have it. |
+| Order | As planned | Containment first, cleanup second, "Terminated" stamp last |
+| Results | `Completed`, `RolledBack`, `RollbackFailed` | `Completed`, `Contained`, `ContainmentFailed` |
+
+The "Terminated" stamp works like a commit marker. Until it's written, every run treats the leaver as unfinished: it revokes sessions and randomizes the password again, then finishes the remaining cleanup.
+*Why it matters:* a broken step never leaves a former employee with access, and never leaves a new hire with half an account.
+
+**3. A circuit breaker for bad HR files.** If a run would terminate more than 10 people or more than 25% of the population, it stops before changing anything and exits with code 2. An operator can override after checking with HR, and the override is journaled with their name.
+*Why it matters:* a truncated HR export should cause a phone call, not a company-wide lockout.
+
+**4. The engine only removes access it owns.** Groups named in the access model are managed. Anything else (a privileged group, a share approved by ticket) is left alone for active workers. Leavers lose all AD group memberships.
+*Why it matters:* JML automation that fights the access-request process gets turned off within a month.
+
+**5. Missing from the HR file is not the same as terminated.** Enabled accounts HR stopped sending are reported as orphans for review and never disabled automatically.
+*Why it matters:* a filtered export or a bad join on the HR side would otherwise look like a mass termination.
+
+**6. Least-privilege app identity.** Graph access is app-only, with a certificate whose private key can't be exported off the management server. Two application permissions: `User.ReadWrite.All` and `GroupMember.ReadWrite.All`. No client secrets and no `Directory.ReadWrite.All`. On the AD side, `lab/03-Grant-JmlDelegation.ps1` delegates rights on `OU=Meridian` only, so the engine doesn't need Domain Admin.
+*Why it matters:* the account that can disable everyone is the most attractive account to steal, so it should hold as little as possible.
+
+**7. Hybrid-aware.** Synced users are mastered in AD, so the engine writes their attributes in AD and only uses Graph for what AD can't do (cloud groups, session revocation). It never edits an AD-mastered user through Graph, and when sync is slow it waits (`PendingSync`) instead of creating a duplicate cloud account.
+*Why it matters:* writing to the wrong side of a hybrid identity either fails or gets silently overwritten on the next sync.
+
+**8. Production-style server layout.** The domain controller runs Server Core with nothing extra installed. Admin tools, the Cloud Sync agent and the engine run on a separate management server, and RDP to both is limited to one IP.
+*Why it matters:* domain controllers are tier 0. Fewer tools and fewer logons on them means less to attack.
+
+---
+
+## Proven on a live lab
+
+Everything below was captured from a real hybrid environment, not the simulator:
+
+- **MFG-DC01:** Windows Server 2022 **Core** domain controller for `meridianfg.internal`
+- **MFG-MGMT01:** Windows Server 2022 management server running RSAT, the Entra Cloud Sync agent and the engine
+- **Microsoft Entra ID** tenant, synced with Entra Cloud Sync and scoped to `OU=Meridian`
+- Both VMs in one Azure VNet (`10.20.0.0/24`), with RDP locked to a single admin IP
+
+### Day 1: joiners
+
+Eleven employees and two contractors start. The plan shows every change before anything happens. The first live apply hit Entra replication lag, and the engine rolled the two contractors back cleanly instead of leaving them half-built. After the fix, everything converged and the final run found nothing to do.
+
+| Plan (dry run) | First apply: two contractors roll back on replication lag ([lesson 1](#what-the-live-lab-taught-me)) |
+|---|---|
+| ![Day 1 plan](docs/screenshots/12-day1-plan.png) | ![Day 1 apply](docs/screenshots/13-day1-apply.png) |
+| **After Cloud Sync: Entra groups added** | **Same file again: 0 actions** |
+| ![Reconcile](docs/screenshots/16-day1-reconcile-entra-groups.png) | ![Idempotent](docs/screenshots/17-day1-idempotent-nochange.png) |
+
+### Day 2: a mover, and a joiner that fails halfway
+
+Elena moves from Treasury to Compliance and loses wire-release access the same day. Michael's account setup is broken on purpose, and the engine deletes the half-built account instead of leaving it behind.
+
+| Mover plan: old access removed | Joiner rolled back |
+|---|---|
+| ![Mover](docs/screenshots/18-day2-mover-plan.png) | ![Rollback](docs/screenshots/19-day2-joiner-rollback.png) |
+
+![Elena's groups after the move](docs/screenshots/20-elena-groups-after-move.png)
+
+### Day 3: a leaver, with a failure in the middle
+
+Tom is disabled and his Entra sessions are revoked within a second. The OU move then fails on purpose, so the "Terminated" stamp is held back and the next run finishes the job.
+
+| Contained despite the failure | Per-action audit trail |
+|---|---|
+| ![Contained](docs/screenshots/21-day3-leaver-contained.png) | ![Audit](docs/screenshots/22-day3-audit-trail.png) |
+| **Next run finishes the job** | **Entra: blocked, sessions revoked** |
+| ![Completed](docs/screenshots/23-day3-leaver-completed.png) | ![Entra blocked](docs/screenshots/24-entra-leaver-blocked.png) |
+
+### Safety rails and break-glass
+
+| A bad HR file would terminate 57% of staff | Bad rows rejected, orphans flagged, nothing disabled |
+|---|---|
+| ![Safety limit](docs/screenshots/25-safety-limit.png) | ![Rejections](docs/screenshots/26-feed-rejections.png) |
+| **Rollback preview, irreversible steps called out** | **Test suite** |
+| ![Undo](docs/screenshots/27-undo-whatif.png) | ![Pester](docs/screenshots/28-pester-green.png) |
+
+<details>
+<summary><b>Lab build screenshots (Azure, AD, Entra, app registration, Cloud Sync)</b></summary>
+
+| | |
+|---|---|
+| ![Azure VMs](docs/screenshots/01-azure-vm-overview.png) | ![NSG rule](docs/screenshots/02-nsg-rdp-my-ip.png) |
+| ![DC ready](docs/screenshots/03-domain-controller-ready.png) | ![OU structure](docs/screenshots/04-aduc-meridian-ous.png) |
+| ![AD delegation](docs/screenshots/05-ad-delegation.png) | ![Entra groups](docs/screenshots/06-entra-birthright-groups.png) |
+| ![App permissions](docs/screenshots/07-app-permissions-granted.png) | ![Certificate only](docs/screenshots/08-app-certificate-no-secrets.png) |
+| ![Cloud Sync agent](docs/screenshots/09-cloud-sync-agent.png) | ![Cloud Sync scope](docs/screenshots/10-cloud-sync-scope.png) |
+| ![App-only Graph](docs/screenshots/11-graph-app-only-context.png) | ![ADUC users](docs/screenshots/14-aduc-day1-users.png) |
+| ![Synced users](docs/screenshots/15-entra-synced-users.png) | ![GitHub Actions](docs/screenshots/29-github-actions-green.png) |
+
+</details>
+
+---
+
+## What the live lab taught me
+
+The simulator and the contract tests passed from the start. The real tenant still found four things they didn't.
+
+**1. Entra replication lag.** Right after `POST /users` creates a contractor, the next write (adding a group, setting a manager) can return 404 for a few seconds because the new object hasn't replicated yet. On the first live run, two contractors rolled back over it. The fix: Graph writes against a just-created user retry 404s with backoff, and later steps address the user by object ID instead of UPN. The contract tests now simulate that lag.
+
+**2. A rollback has to survive the same lag.** The compensating delete for a failed contractor hit the same 404, treated it as "already gone" and left an active account behind. Deletes now retry before they accept "not found". A rollback that quietly fails is worse than no rollback.
+
+**3. Sync scope is part of your leaver process.** Tom vanished from Entra after his termination instead of showing as disabled. The Cloud Sync scope listed individual OUs, and `OU=Disabled Users` wasn't one of them, so moving him there pushed him out of scope and Cloud Sync soft-deleted his cloud account. For a bank that's a records-retention problem: the 30-day clock on his mailbox and files starts without anyone deciding it should. Scoping to the parent `OU=Meridian` brought him back as the same, disabled account. Deletion should be a deliberate step after a retention period, not a side effect of an OU move. I caught it when a Graph lookup on Tom, meant to confirm `accountEnabled: false`, came back 404 instead.
+
+![Leaver soft-deleted by a sync scope gap](docs/screenshots/24a-scope-lesson-deleted-user.png)
+
+**4. The sync engine can get stuck, and the JML engine has to wait it out.** Twice, a new AD user never appeared in Entra and on-demand provisioning answered `JoinNotFound`. Restarting provisioning in Cloud Sync cleared it. Meanwhile the engine reported those users as `PendingSync` and changed nothing in the cloud. It never tried to create a duplicate cloud account to work around sync.
+
+---
+
+## Running it
+
+### Try it on any machine (no lab needed)
+
+The simulated provider is an in-memory AD and Entra pair with a stand-in Cloud Sync cycle. Same planner, same executor.
+
+```powershell
+# macOS: brew install --cask powershell   |   Windows: winget install Microsoft.PowerShell
+pwsh
+Copy-Item ./config/jml.config.example.psd1 ./config/jml.config.psd1
+Import-Module ./src/MeridianJML/MeridianJML.psd1
+
+$cfg = './config/jml.config.psd1'
+Invoke-JmlRun -ConfigPath $cfg -FeedPath ./data/hr-feed-day1-joiners.csv -Simulated            # plan
+Invoke-JmlRun -ConfigPath $cfg -FeedPath ./data/hr-feed-day1-joiners.csv -Simulated -Apply     # apply
+Invoke-JmlRun -ConfigPath $cfg -FeedPath ./data/hr-feed-day3-leavers.csv -Simulated -Apply `
+    -SimulateFailure AD.MoveUser -SimulateFailureFor 100008                                     # break it on purpose
+```
+
+### Build the real hybrid lab
+
+[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) builds the two Azure servers, the forest, Cloud Sync and the app registration, then walks the three HR days end to end. Every screenshot above has a step there. It also has a troubleshooting table and a resume checklist for when the VMs have been off.
+
+### The HR file
+
+One row per worker, the full population every day (a snapshot, not a list of changes):
+
+```
+EmployeeId,GivenName,Surname,Department,JobTitle,ManagerId,Office,EmploymentType,Status,EffectiveDate
+100002,Priya,Raman,Finance,Senior Financial Analyst,100001,Chicago,Employee,Active,2026-09-01
+```
+
+`Status` is `Active` or `Terminated`. `EmploymentType` is `Employee` or `Contractor`. `EffectiveDate` is the start date for joiners (accounts are created up to 14 days early) and the termination date for leavers.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `Invoke-JmlRun -ConfigPath -FeedPath` | Plan only. Reads everything, writes nothing, saves the plan as change evidence. |
+| `Invoke-JmlRun ... -Apply` | Execute the plan. |
+| `Invoke-JmlRun ... -OverrideSafetyLimit` | Proceed past the circuit breaker (journaled). |
+| `Show-JmlRun -ConfigPath -List` | List past runs. |
+| `Show-JmlRun -ConfigPath -RunId [-EmployeeId]` | Print the per-action audit trail for a run. |
+| `Undo-JmlRun -ConfigPath -RunId [-EmployeeId] [-WhatIf]` | Break-glass reversal of an applied run from its journal. |
+| `scripts/Start-JmlRun.ps1 -FeedPath [-Apply]` | Scheduler entry point with exit codes: 0 ok, 1 retry pending, 2 safety abort, 3 containment failed, 4 engine error. |
+
+The exit codes are meant for a scheduler or a monitoring tool: 1 means the next run will finish the work, 2 means call HR, and 3 means page someone, because a leaver may still have access.
+
+---
+
+## Audit evidence and control mapping
+
+| File | Contents |
+|---|---|
+| `output/journal/<RunId>.json` | Full plan and outcome: every action, its before-state, its undo, timestamps, status, errors, operator and HR file SHA-256. |
+| `output/logs/run-<RunId>.jsonl` | One JSON line per event, ready for Sentinel, Splunk or any SIEM. |
+| `output/reports/report-<RunId>.csv` | One row per person for the access review or the auditor. |
+
+Passwords are generated at execution time and never logged. Rollbacks write their own journal, so the undo is audited too.
+
+| Framework | Control | How |
+|---|---|---|
+| PCI DSS v4.0 | 8.2.4, 8.2.5 | Adds, changes and removals follow the authoritative HR record; terminated access is revoked on the next run, containment first. |
+| SOX ITGC | Logical access: provisioning, deprovisioning, transfers | Plans are change evidence; journals show who ran what, from which HR file hash. |
+| ISO/IEC 27001:2022 | A.5.16, A.5.18 | Identity lifecycle and access rights driven from one source of truth. |
+| NIST SP 800-53 | AC-2, AC-2(3) | Account management; disabling accounts of departed users. |
+
+---
+
+## Testing
+
+```powershell
+Invoke-Pester ./tests
+```
+
+- `tests/MeridianJML.Tests.ps1` runs the three-day story on the simulated directory: idempotency, rollback, fail-secure leavers, the circuit breaker, orphans, naming collisions and the rollback journal.
+- `tests/LiveProvider.Contract.Tests.ps1` runs the **live** AD and Graph code against stand-ins for the `ActiveDirectory` and `Microsoft.Graph.Authentication` modules. The stand-ins copy the behavior that breaks real scripts: missing AD attributes, Graph 404s, duplicate-member 400s, AD-mastered users rejecting cloud edits, `employeeId` filters that need `ConsistencyLevel: eventual`, and replication lag on new users.
+
+Both run in GitHub Actions on every push.
+
+---
+
+## Repository layout
+
+```
+config/            engine config (example) and the birthright access model
+data/              sample HR files: day 1 joiners, day 2 movers, day 3 leavers, bad extract, invalid rows
+docs/              architecture, step-by-step lab walkthrough, screenshots
+lab/               Azure deployment, forest, OU/group build, AD delegation, app registration, Entra groups
+scripts/           unattended entry point with exit codes
+src/MeridianJML/   the module (Public = commands, Private = planner, executor, providers)
+tests/             Pester suites and AD/Graph test stand-ins
+```
+
+## Roadmap
+
+- HR source adapters for the Workday and SuccessFactors APIs alongside CSV
+- Graph `$batch` and delta queries for large populations
+- Temporary Access Pass issuance for joiners and rehires
+- Hand-off to Entra Lifecycle Workflows (`employeeLeaveDateTime`) for mailbox and OneDrive tasks
+- Part 2 of the series: privileged account lifecycle and PIM role assignment
+
+## License
+
+MIT. See [LICENSE](LICENSE).
